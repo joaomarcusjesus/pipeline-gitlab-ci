@@ -1,0 +1,78 @@
+image: node:14
+
+variables:
+  DOCKER_HOST: tcp://docker:2375
+  DOCKER_DRIVER: overlay2
+  DOCKER_TLS_CERTDIR: ""
+
+stages:
+  - Build
+  - Publish
+  - Deploy
+
+cache:
+  paths:
+    - node_modules/
+    - dist/
+
+npm_install:
+  stage: Build
+  script: npm ci
+
+compile_dependencies:
+  stage: Build
+  script: npm run build
+  needs: ["npm_install"]
+
+coverage:
+  stage: Build
+  script: npm run test:cov
+  needs: ["npm_install"]
+
+run_units_tests:
+  stage: Build
+  script: npm run test
+  needs: ["npm_install"]
+
+publish_ecr:
+  stage: Publish
+  image:
+    name: docker:latest
+  services:
+    - docker:19-dind
+  before_script:
+    - apk add --no-cache curl jq python3 py3-pip
+    - pip install awscli
+    - aws --version
+    - aws ecr get-login-password | docker login --username AWS --password-stdin $DOCKER_REGISTRY
+    - docker info
+    - docker --version
+  script:
+    - docker build -t $DOCKER_REGISTRY:$CI_PIPELINE_IID .
+    - docker push $DOCKER_REGISTRY:$CI_PIPELINE_IID
+  needs: ["run_units_tests"]
+  only:
+    - master
+    - develop
+    - homologacao
+
+deploy:
+  stage: Deploy
+  image:
+    name: docker:latest
+  services:
+    - docker:19-dind
+  before_script:
+    - apk add --no-cache curl jq python3 py3-pip
+    - pip install awscli
+    - aws --version
+    - aws ecr get-login-password | docker login --username AWS --password-stdin $DOCKER_REGISTRY
+    - docker info
+    - docker --version
+  script:
+    - aws ecs update-service --region $AWS_DEFAULT_REGION --cluster "$CLUSTER_NAME" --service "$SERVICE" --task-definition "$TASK_DEFINITION_NAME" --force-new-deployment
+  needs: ["publish_ecr"]
+  only:
+    - master
+    - develop
+    - homologacao
